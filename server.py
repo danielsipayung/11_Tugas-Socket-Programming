@@ -1,167 +1,219 @@
 import socket
+import sys
 import threading
-import time
+import struct
+import random
+
+# Mengimpor fungsi-fungsi RSA dari rsa.py
+from rsa import generate_keypair, encrypt, decrypt
 from storage import Storage
 
+# ===============================
+# Kelas Server
+# ===============================
+
 class ChatServer:
-    def __init__(self, ip='0.0.0.0', port=5000):
-        self.server_ip = ip
-        self.server_port = port
-        self.rooms = {}  # Dictionary to hold room members
-        self.clients = {}  # Dictionary to map address to (username, room)
-        self.heartbeat_times = {}  # To track last heartbeat time for each client
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.sock.bind((self.server_ip, self.server_port))
-        self.client_sequence = {}  # Track sequence numbers for each client
-        self.room_state_changed = True  # A flag to track room state changes
-        print(f"UDP Server started at {self.server_ip}:{self.server_port}")
+    def __init__(self):
+        self.client_keys = {}            # {addr: public_key}
+        self.clients = []                # List of tuples (addr, username)
+        self.addr_chatroom_map = {}      # {addr: chatroom_password}
+        self.chatrooms = {}              # {chatroom_password: set(username)}
+        self.sequence_numbers = {}       # For TCP over UDP
+        self.expected_acks = {}
 
-        # Start a thread to monitor changes and display active rooms and clients
-        threading.Thread(target=self.display_active_rooms, daemon=True).start()
-        # Start a thread to check for disconnected clients
-        threading.Thread(target=self.check_heartbeats, daemon=True).start()
+        self.server_ip = '0.0.0.0'
+        self.server_port = self.get_server_port()
 
-    def display_active_rooms(self):
-        while True:
-            if self.room_state_changed:  # Display only if there are changes
-                print("\n----- Active Rooms and Clients -----")
-                if not self.rooms:
-                    print("No active rooms.")
-                else:
-                    for room, members in self.rooms.items():
-                        member_usernames = [self.clients[addr][0] for addr in members]
-                        print(f"Room '{room}': {len(members)} active member(s) -> {member_usernames}")
-                print("-----------------------------------\n")
-                self.room_state_changed = False  # Reset the flag after displaying
+        # Membuat socket UDP
+        self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.server_socket.bind((self.server_ip, self.server_port))
 
-    def check_heartbeats(self):
-        while True:
-            current_time = time.time()
-            disconnected_clients = []
+        print("Menghasilkan kunci RSA server...")
+        self.public_key, self.private_key = generate_keypair()
 
-            # Identify clients that haven't sent a heartbeat recently
-            for addr, last_heartbeat in self.heartbeat_times.items():
-                if current_time - last_heartbeat > 15:  # 15 seconds without a heartbeat
-                    disconnected_clients.append(addr)
+        print(f"Server berjalan di {self.server_ip}:{self.server_port}")
+        print("Menunggu klien untuk terhubung...")
 
-            # Remove each identified disconnected client
-            for addr in disconnected_clients:
-                self.remove_client(addr)
-
-            time.sleep(5)  # Check heartbeats every 5 seconds
-
-    def send_saved_messages(self, addr, room):
-        # Load previous messages from the storage
-        saved_messages = Storage.load_messages(room)
-        for message_data in saved_messages:
-            _, username, encrypted_message = message_data
-            # Send each saved message to the client who just joined
-            self.sock.sendto(f"{username}:{encrypted_message}".encode('utf-8'), addr)
-            print(f"[Server] Sending saved message to {addr} in room '{room}': {message_data}")
-
-    def handle_client(self, data, addr):
-        try:
-            message = data.decode('utf-8')
-            print(f"[Server] Received message from {addr}: {message}")
-
-            # Handle three-way handshake
-            if message == "SYN":
-                print(f"Received SYN from {addr}, sending SYN-ACK...")
-                self.sock.sendto("SYN-ACK".encode('utf-8'), addr)
-                return
-            elif message == "ACK":
-                print(f"Received ACK from {addr}, connection established.")
-                self.client_sequence[addr] = 0  # Initialize sequence tracking for this client
-                return
-
-            # Handle username validation request
-            if message.startswith("USERNAME:"):
-                requested_username = message.split(":")[1].strip().lower()
-                existing_usernames = [name[0].lower() for name in self.clients.values()]
-                if requested_username in existing_usernames:
-                    self.sock.sendto("INVALID".encode('utf-8'), addr)
-                else:
-                    self.sock.sendto("VALID".encode('utf-8'), addr)
-                return
-
-            # Check for heartbeat message
-            if message.startswith("HEARTBEAT:"):
-                username = message.split(":")[1]
-                self.heartbeat_times[addr] = time.time()  # Update last heartbeat time
-                return
-
-            # Check if it's a registration message
-            if ";" in message:
-                parts = message.split(";")
-                if len(parts) != 2 or not parts[0] or not parts[1]:
-                    return
-                
-                username, room = parts
-
-                if room not in self.rooms:
-                    self.rooms[room] = []  # Create the room if it doesn't exist
-
-                # Add client to room if not already present
-                if addr not in self.rooms[room]:
-                    self.rooms[room].append(addr)
-                    self.room_state_changed = True  # Mark change
-                    print(f"Client '{username}' joined room '{room}'.")
-                    self.heartbeat_times[addr] = time.time()  # Record initial heartbeat
-
-                # Update client mapping
-                self.clients[addr] = (username, room)
-
-                # Send saved messages to the client after they join the room
-                self.send_saved_messages(addr, room)
-                return
-
-            # Handle encrypted message forwarding with sequence acknowledgment
-            if message.count(":") >= 3:
-                parts = message.split(":", 3)
-                seq_num = int(parts[0])  # Get sequence number from message
-                username, room, encrypted_message = parts[1], parts[2], parts[3]
-
-                # Verify that the room exists before forwarding the message
-                if room not in self.rooms:
-                    return
-
-                # Check if sequence number is in order
-                if addr in self.client_sequence and seq_num > self.client_sequence[addr]:
-                    # Update sequence number for client
-                    self.client_sequence[addr] = seq_num
-                    self.sock.sendto(f"ACK:{seq_num}".encode('utf-8'), addr)  # Send acknowledgment
-
-                    # Save the message to storage and forward to other clients in the same room
-                    Storage.save_message(room, username, encrypted_message)
-                    for client in self.rooms[room]:
-                        if client != addr:
-                            self.sock.sendto(f"{username}:{encrypted_message}".encode('utf-8'), client)
-                            print(f"[Server] Forwarded message from {username} to {client} in room '{room}'.")
-
-        except Exception as e:
-            print(f"Error handling client: {e}")
-
-    def remove_client(self, addr):
-        if addr in self.clients:
-            username, room = self.clients[addr]
-            self.rooms[room].remove(addr)
-            print(f"Client '{username}' disconnected from room '{room}'.")
-            self.room_state_changed = True  # Mark change to update display
-
-            # Clean up if the room is empty
-            if not self.rooms[room]:
-                del self.rooms[room]
-
-            del self.clients[addr]
-            del self.heartbeat_times[addr]
-
-    def start(self):
+    def get_server_port(self):
         while True:
             try:
-                data, addr = self.sock.recvfrom(1024)
-                threading.Thread(target=self.handle_client, args=(data, addr)).start()
-            except Exception as e:
-                print(f"Server error while receiving data: {e}")
+                port = int(input("Masukkan port server (1024-65535): ").strip())
+                if 1024 <= port <= 65535:
+                    return port
+                else:
+                    print("Port harus berada dalam rentang 1024-65535.")
+            except ValueError:
+                print("Input tidak valid. Silakan masukkan angka.")
+
+    def start(self):
+        try:
+            while True:
+                try:
+                    data, addr = self.server_socket.recvfrom(65536)
+                    threading.Thread(target=self.handle_packet, args=(data, addr)).start()
+                except Exception as e:
+                    print(f"Error dalam loop utama: {e}")
+                    # Tambahkan logging atau penanganan tambahan jika diperlukan
+        except KeyboardInterrupt:
+            print("\nServer dimatikan.")
+        finally:
+            self.server_socket.close()
+
+    def handle_packet(self, data, addr):
+        try:
+            # Memeriksa apakah data adalah permintaan kunci publik
+            if data == b"REQUEST_PUBLIC_KEY":
+                # Mengirim kunci publik server ke klien
+                self.server_socket.sendto(str(self.public_key[0]).encode('utf-8'), addr)
+                self.server_socket.sendto(str(self.public_key[1]).encode('utf-8'), addr)
+                return
+
+            # TCP over UDP: Memproses tiga-way handshake
+            if data.startswith(b'SYN'):
+                recv_seq = struct.unpack('!I', data[3:])[0]
+                server_seq = random.randint(0, 1000)
+                syn_ack_packet = b'SYN-ACK' + struct.pack('!I', server_seq)
+                self.server_socket.sendto(syn_ack_packet, addr)
+                print(f"[DEBUG] Mengirim SYN-ACK ke {addr}")
+                self.sequence_numbers[addr] = server_seq + 1
+                self.expected_acks[addr] = recv_seq + 1
+                return
+            elif data.startswith(b'ACK'):
+                recv_ack = struct.unpack('!I', data[3:])[0]
+                print(f"[DEBUG] Koneksi dengan {addr} terbentuk.")
+                return
+
+            # Menerima paket data
+            seq_num = struct.unpack('!I', data[:4])[0]
+            payload = data[4:-2]
+            recv_checksum = struct.unpack('!H', data[-2:])[0]
+
+            # Verifikasi checksum
+            packet_without_checksum = data[:-2]
+            calc_checksum = self.calculate_checksum(packet_without_checksum)
+            if calc_checksum != recv_checksum:
+                print(f"[!] Checksum tidak valid dari {addr}. Paket mungkin korup.")
+                return
+
+            # Simpan sequence number
+            self.sequence_numbers[addr] = seq_num
+            self.expected_acks[addr] = seq_num + 1
+
+            # Jika belum menerima kunci publik klien, terima sekarang
+            if addr not in self.client_keys:
+                # Menerima kunci publik klien dalam satu paket
+                public_key_data = payload.decode('utf-8')
+                e_str, n_str = public_key_data.split('::')
+                client_public_key_e = int(e_str)
+                client_public_key_n = int(n_str)
+                self.client_keys[addr] = (client_public_key_e, client_public_key_n)
+                print(f"[DEBUG] Menerima kunci publik dari {addr}: {self.client_keys[addr]}")
+                return
+
+            # Proses data
+            message = decrypt(self.private_key, payload)
+            print(f"[DEBUG] Pesan didekripsi dari {addr}: {message}")
+            self.process_message(addr, message)
+        except Exception as e:
+            print(f"Error menangani paket dari {addr}: {e}")
+            # Tambahkan penanganan tambahan jika diperlukan
+
+    def calculate_checksum(self, data):
+        """Menghitung checksum sederhana."""
+        checksum = 0
+        for i in range(0, len(data), 2):
+            if i+1 < len(data):
+                word = (data[i] << 8) + data[i+1]
+            else:
+                word = (data[i] << 8)
+            checksum += word
+            checksum = (checksum & 0xFFFF) + (checksum >> 16)
+        checksum = ~checksum & 0xFFFF
+        return checksum
+
+    def process_message(self, addr, message):
+        try:
+            tag, actual_message = message.split(' ', 1)
+
+            if tag == "AUTH":
+                key, value = actual_message.split(' ', 1)
+                if key == "PASSWORD":
+                    chatroom_password = value
+                    if chatroom_password not in self.chatrooms:
+                        self.chatrooms[chatroom_password] = set()
+                    self.addr_chatroom_map[addr] = chatroom_password
+                elif key == "USERNAME":
+                    chatroom_password = self.addr_chatroom_map.get(addr)
+                    if chatroom_password is None:
+                        self.send_response(addr, "AUTH_FAILED")
+                        return
+                    if value in self.chatrooms[chatroom_password]:
+                        self.send_response(addr, "USERNAME_TAKEN")
+                    else:
+                        self.chatrooms[chatroom_password].add(value)
+                        self.clients.append((addr, value))
+                        self.send_response(addr, "USERNAME_OK")
+                        print(f"User {value} telah bergabung ke chatroom.")
+
+                        # Notifikasi ke klien lain di chatroom yang sama
+                        self.notify_clients(addr, f"NOTIFY {value} telah bergabung ke chatroom.")
+
+                        # Mengirim pesan yang telah disimpan kepada klien yang baru bergabung
+                        saved_messages = Storage.load_messages(chatroom_password)
+                        for sender_username, saved_message in saved_messages:
+                            # Encrypt the message with the client's public key
+                            encrypted_message = encrypt(self.client_keys[addr], f"CHAT {sender_username}: {saved_message}")
+                            self.send_tcp_packet(addr, encrypted_message)
+                else:
+                    self.send_response(addr, "AUTH_FAILED")
+            elif tag == "CHAT":
+                chatroom_password = self.addr_chatroom_map.get(addr)
+                if chatroom_password:
+                    # Meneruskan pesan ke klien lain di chatroom yang sama
+                    self.notify_clients(addr, message)
+
+                    # Menyimpan pesan ke storage
+                    sender_username = actual_message.split(":")[0].strip()
+                    message_content = ":".join(actual_message.split(":")[1:]).strip()
+                    Storage.save_message(chatroom_password, sender_username, message_content)
+            elif tag == "FILE":
+                # Menangani file biner
+                chatroom_password = self.addr_chatroom_map.get(addr)
+                if chatroom_password:
+                    # Meneruskan file ke klien lain di chatroom yang sama
+                    self.notify_clients(addr, message)
+
+                    # Menyimpan pesan ke storage
+                    sender_username = actual_message.split(":")[0].strip()
+                    file_info = ":".join(actual_message.split(":")[1:]).strip()
+                    Storage.save_message(chatroom_password, sender_username, f"[File] {file_info}")
+            else:
+                print(f"[DEBUG] Tag tidak dikenal dari {addr}: {tag}")
+        except Exception as e:
+            print(f"Error memproses pesan dari {addr}: {e}")
+            # Tambahkan penanganan tambahan jika diperlukan
+
+    def send_response(self, addr, response):
+        """Mengenkripsi dan mengirim respons ke klien."""
+        encrypted_response = encrypt(self.client_keys[addr], response)
+        self.send_tcp_packet(addr, encrypted_response)
+
+    def send_tcp_packet(self, addr, data):
+        """Mengirim paket dengan simulasi TCP over UDP."""
+        seq_num = self.sequence_numbers.get(addr, random.randint(0, 1000))
+        packet = struct.pack('!I', seq_num) + data
+        checksum = self.calculate_checksum(packet)
+        packet += struct.pack('!H', checksum)
+        self.server_socket.sendto(packet, addr)
+        self.sequence_numbers[addr] = seq_num + 1
+
+    def notify_clients(self, sender_addr, message):
+        """Mengirim notifikasi ke klien lain di chatroom yang sama."""
+        chatroom_password = self.addr_chatroom_map.get(sender_addr)
+        for client_addr, _ in self.clients:
+            if client_addr != sender_addr and self.addr_chatroom_map.get(client_addr) == chatroom_password:
+                encrypted_message = encrypt(self.client_keys[client_addr], message)
+                self.send_tcp_packet(client_addr, encrypted_message)
 
 if __name__ == "__main__":
     server = ChatServer()

@@ -1,26 +1,22 @@
 # storage.py
 
-import csv
-import os
-
 class Storage:
-    FILENAME = "chat_log.csv"
+    FILENAME = "chat_log.txt"
 
     @staticmethod
-    def save_message(room, username, encrypted_message):
-        # Check if the file already exists, if not create it and write headers
-        file_exists = os.path.isfile(Storage.FILENAME)
-        with open(Storage.FILENAME, mode='a', newline='') as file:
-            writer = csv.writer(file)
-            if not file_exists:
-                writer.writerow(["Room", "Username", "Message"])  # Write header if file is new
-            writer.writerow([room, username, encrypted_message])
+    def save_message(chatroom, username, message):
+        with open(Storage.FILENAME, 'a') as f:
+            f.write(f"{chatroom}::{username}::{message}\n")
 
     @staticmethod
-    def load_messages(room):
-        if not os.path.exists(Storage.FILENAME):
-            return []
-
-        with open(Storage.FILENAME, mode='r', newline='') as file:
-            reader = csv.reader(file)
-            return [row for row in reader if row[0] == room]
+    def load_messages(chatroom):
+        messages = []
+        try:
+            with open(Storage.FILENAME, 'r') as f:
+                for line in f:
+                    parts = line.strip().split("::")
+                    if len(parts) == 3 and parts[0] == chatroom:
+                        messages.append((parts[1], parts[2]))
+        except FileNotFoundError:
+            pass
+        return messages
