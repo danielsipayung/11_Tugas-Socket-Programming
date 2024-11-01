@@ -330,10 +330,6 @@ class ChatClient:
                     print("[*] Keluar dari chat...")
                     self.stop_event.set()
                     break
-                elif message.lower().startswith('/sendfile'):
-                    # Mengirim file biner
-                    filepath = message.split(' ', 1)[1]
-                    self.send_file(filepath)
                 else:
                     full_message = f"CHAT {self.username}: {message}"
                     encrypted_message = encrypt(self.server_public_key, full_message)
@@ -346,18 +342,6 @@ class ChatClient:
                 print(f"[!] Error mengirim pesan: {e}")
                 self.stop_event.set()
                 break
-
-    def send_file(self, filepath):
-        """Mengirim file biner ke server."""
-        try:
-            with open(filepath, 'rb') as f:
-                file_data = f.read()
-                full_message = f"FILE {self.username}: {filepath.split('/')[-1]}::{file_data.hex()}"
-                encrypted_message = encrypt(self.server_public_key, full_message)
-                self.send_tcp_packet(encrypted_message)
-                print(f"[+] File '{filepath}' berhasil dikirim.")
-        except Exception as e:
-            print(f"[!] Gagal mengirim file: {e}")
 
 # ===============================
 # Bagian Utama Program

@@ -176,17 +176,6 @@ class ChatServer:
                     sender_username = actual_message.split(":")[0].strip()
                     message_content = ":".join(actual_message.split(":")[1:]).strip()
                     Storage.save_message(chatroom_password, sender_username, message_content)
-            elif tag == "FILE":
-                # Menangani file biner
-                chatroom_password = self.addr_chatroom_map.get(addr)
-                if chatroom_password:
-                    # Meneruskan file ke klien lain di chatroom yang sama
-                    self.notify_clients(addr, message)
-
-                    # Menyimpan pesan ke storage
-                    sender_username = actual_message.split(":")[0].strip()
-                    file_info = ":".join(actual_message.split(":")[1:]).strip()
-                    Storage.save_message(chatroom_password, sender_username, f"[File] {file_info}")
             else:
                 print(f"[DEBUG] Tag tidak dikenal dari {addr}: {tag}")
         except Exception as e:
