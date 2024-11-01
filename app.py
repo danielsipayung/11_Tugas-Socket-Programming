@@ -7,7 +7,6 @@ import struct
 
 # Mengimpor fungsi-fungsi RSA dari rsa.py
 from rsa import generate_keypair, encrypt, decrypt, get_local_ip
-from storage import Storage
 
 # ===============================
 # Kelas Client
@@ -241,7 +240,6 @@ class ChatClient:
                 print(f"[!] Error saat menerima respons dari server: {e}")
                 self.client_socket.close()
                 sys.exit()
-    
 
     def send_tcp_packet(self, data):
         """Mengirim paket dengan simulasi TCP over UDP."""
@@ -269,6 +267,11 @@ class ChatClient:
             return payload
         except socket.timeout:
             return None
+        except OSError:
+            if self.stop_event.is_set():
+                return None
+            else:
+                raise
 
     def calculate_checksum(self, data):
         """Menghitung checksum sederhana."""
@@ -291,6 +294,7 @@ class ChatClient:
         self.send_messages()
         recv_thread.join()
         self.client_socket.close()
+        print("\n[*] Anda telah keluar dari chatroom. Terima kasih telah menggunakan aplikasi ini.")
 
     def receive_messages(self):
         """Menerima pesan dari server."""
@@ -311,41 +315,60 @@ class ChatClient:
                 else:
                     print(f"\n[!] Pesan server: {message}")
             except socket.timeout:
-                # Tidak melakukan apa-apa dan melanjutkan loop
                 continue
+            except OSError:
+                if self.stop_event.is_set():
+                    break
+                else:
+                    print("\n[!] Error: Socket error.")
+                    break
             except Exception as e:
-                print(f"\n[!] Error menerima pesan: {e}")
-                break
+                if self.stop_event.is_set():
+                    break
+                else:
+                    print(f"\n[!] Error menerima pesan: {e}")
+                    break
 
     def send_messages(self):
         """Mengirim pesan ke server."""
-        while not self.stop_event.is_set():
-            try:
-                message = input("You: ").strip()
-                if message == "":
-                    print("[!] Pesan tidak boleh kosong.")
-                    continue
+        try:
+            while not self.stop_event.is_set():
+                try:
+                    message = input("You: ").strip()
+                    if message == "":
+                        print("[!] Pesan tidak boleh kosong.")
+                        continue
 
-                if message.lower() == '/exit':
-                    print("[*] Keluar dari chat...")
-                    self.stop_event.set()
-                    break
-                else:
-                    full_message = f"CHAT {self.username}: {message}"
+                    if message.lower() == '/exit':
+                        print("[*] Keluar dari chat...")
+                        # Mengirim pesan EXIT ke server
+                        full_message = f"EXIT {self.username}"
+                        encrypted_message = encrypt(self.server_public_key, full_message)
+                        self.send_tcp_packet(encrypted_message)
+                        self.stop_event.set()
+                        break
+                    else:
+                        full_message = f"CHAT {self.username}: {message}"
+                        encrypted_message = encrypt(self.server_public_key, full_message)
+                        self.send_tcp_packet(encrypted_message)
+                except KeyboardInterrupt:
+                    print("\n[*] Keluar dari chat...")
+                    # Mengirim pesan EXIT ke server
+                    full_message = f"EXIT {self.username}"
                     encrypted_message = encrypt(self.server_public_key, full_message)
                     self.send_tcp_packet(encrypted_message)
-            except KeyboardInterrupt:
-                print("\n[*] Keluar dari chat...")
-                self.stop_event.set()
-                break
-            except Exception as e:
-                print(f"[!] Error mengirim pesan: {e}")
-                self.stop_event.set()
-                break
+                    self.stop_event.set()
+                    break
+                except Exception as e:
+                    print(f"[!] Error mengirim pesan: {e}")
+                    self.stop_event.set()
+                    break
+        except Exception as e:
+            print(f"[!] Error dalam send_messages: {e}")
 
-# ===============================
-# Bagian Utama Program
-# ===============================
+    # ===============================
+    # Bagian Utama Program
+    # ===============================
 
 def main():
     client = ChatClient()
@@ -353,6 +376,15 @@ def main():
         client.start()
     except KeyboardInterrupt:
         print("\n[!] Program dihentikan oleh pengguna.")
+        # Mengirim pesan EXIT ke server jika memungkinkan
+        try:
+            if client.username:
+                full_message = f"EXIT {client.username}"
+                encrypted_message = encrypt(client.server_public_key, full_message)
+                client.send_tcp_packet(encrypted_message)
+                print("[*] Keluar dari chat...")
+        except:
+            pass
         sys.exit()
 
 if __name__ == "__main__":
