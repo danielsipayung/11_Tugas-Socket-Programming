@@ -1,5 +1,5 @@
 
-# Aplikasi Chat Room dengan Enkripsi RSA dan TCP Over UDP
+# Chatroom Aplication with RSA Encryption
 
 Proyek ini adalah aplikasi chat room berbasis Python yang menggunakan protokol UDP dengan tambahan simulasi TCP over UDP untuk meningkatkan reliabilitas transmisi data. Aplikasi ini juga memanfaatkan enkripsi RSA untuk menjaga keamanan pesan antar pengguna.
 
