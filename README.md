@@ -56,7 +56,7 @@ Setelah berhasil masuk ke chat room, client dapat:
 - Mengirim pesan teks langsung dengan mengetik pesan dan menekan Enter.
 - Mengetik `/exit` untuk keluar dari chat room.
 
-## Struktur Proyek
+## Struktur _Project_
 
 - `app.py` - Implementasi client dengan koneksi TCP over UDP dan enkripsi RSA.
 - `server.py` - Server yang menerima pesan dari client, menyiarkan pesan, dan memproses otentikasi.
